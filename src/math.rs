@@ -9,7 +9,7 @@
 //!   (OpenGL uses -1 to 1, so OpenGL formulas from tutorials are slightly different.)
 //! - Column-major: a matrix is stored as 4 columns. WGSL's `mat4x4<f32>` reads it the same way.
 
-use std::ops::{Mul, Sub};
+use std::ops::{Add, Mul, Sub};
 
 /// A 3D vector (a point or a direction).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,10 +38,39 @@ impl Vec3 {
         )
     }
 
+    pub fn length(self) -> f32 {
+        self.dot(self).sqrt()
+    }
+
     /// The same direction, but with length 1.
     pub fn normalize(self) -> Vec3 {
-        let len = self.dot(self).sqrt();
-        Vec3::new(self.x / len, self.y / len, self.z / len)
+        self * (1.0 / self.length())
+    }
+
+    /// The smaller of each part (x, y, z) of the two vectors.
+    pub fn min(self, other: Vec3) -> Vec3 {
+        Vec3::new(
+            self.x.min(other.x),
+            self.y.min(other.y),
+            self.z.min(other.z),
+        )
+    }
+
+    /// The larger of each part (x, y, z) of the two vectors.
+    pub fn max(self, other: Vec3) -> Vec3 {
+        Vec3::new(
+            self.x.max(other.x),
+            self.y.max(other.y),
+            self.z.max(other.z),
+        )
+    }
+}
+
+impl Add for Vec3 {
+    type Output = Vec3;
+
+    fn add(self, other: Vec3) -> Vec3 {
+        Vec3::new(self.x + other.x, self.y + other.y, self.z + other.z)
     }
 }
 
@@ -52,6 +81,16 @@ impl Sub for Vec3 {
 
     fn sub(self, other: Vec3) -> Vec3 {
         Vec3::new(self.x - other.x, self.y - other.y, self.z - other.z)
+    }
+}
+
+// `v * 2.0`: makes a vector longer or shorter. The right-hand side is an `f32`,
+// so this is `Mul<f32>`, a different trait from `Mul<Mat4>` below.
+impl Mul<f32> for Vec3 {
+    type Output = Vec3;
+
+    fn mul(self, s: f32) -> Vec3 {
+        Vec3::new(self.x * s, self.y * s, self.z * s)
     }
 }
 
@@ -75,6 +114,31 @@ impl Mat4 {
         ],
     };
 
+    /// Moves points by `offset`. The offset goes in the last column, which is
+    /// multiplied by `w`. Points have w = 1 so they move; directions have w = 0 so they don't.
+    pub fn translation(offset: Vec3) -> Mat4 {
+        Mat4 {
+            cols: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [offset.x, offset.y, offset.z, 1.0],
+            ],
+        }
+    }
+
+    /// Makes things `s` times bigger, the same amount in every direction.
+    pub fn scale(s: f32) -> Mat4 {
+        Mat4 {
+            cols: [
+                [s, 0.0, 0.0, 0.0],
+                [0.0, s, 0.0, 0.0],
+                [0.0, 0.0, s, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+    }
+
     /// Turns points around the y axis (up) by `angle` radians.
     pub fn rotation_y(angle: f32) -> Mat4 {
         let (s, c) = angle.sin_cos();
@@ -89,6 +153,9 @@ impl Mat4 {
     }
 
     /// Turns points around the x axis (right) by `angle` radians.
+    // Not used by the renderer right now (the teapot only turns around y), but kept
+    // for later. `allow(dead_code)` stops the "never used" warning.
+    #[allow(dead_code)]
     pub fn rotation_x(angle: f32) -> Mat4 {
         let (s, c) = angle.sin_cos();
         Mat4 {
@@ -182,6 +249,20 @@ mod tests {
         let m = Mat4::rotation_y(0.7);
         assert_eq!(Mat4::IDENTITY * m, m);
         assert_eq!(m * Mat4::IDENTITY, m);
+    }
+
+    #[test]
+    fn translation_moves_points_but_not_directions() {
+        let m = Mat4::translation(Vec3::new(1.0, 2.0, 3.0));
+        assert_close(transform(m, [1.0, 1.0, 1.0, 1.0]), [2.0, 3.0, 4.0, 1.0]);
+        assert_close(transform(m, [1.0, 1.0, 1.0, 0.0]), [1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn scale_then_translate() {
+        // `a * b` does `b` first: scale by 2, then move up by 1.
+        let m = Mat4::translation(Vec3::new(0.0, 1.0, 0.0)) * Mat4::scale(2.0);
+        assert_close(transform(m, [1.0, 1.0, 1.0, 1.0]), [2.0, 3.0, 2.0, 1.0]);
     }
 
     #[test]

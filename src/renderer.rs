@@ -12,6 +12,7 @@
 //! - `BindGroup`: tells the shader which buffers (and later, textures) to use.
 //! - `Texture`: an image on the GPU. We use one as the depth buffer.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,12 +22,25 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use crate::math::{Mat4, Vec3};
-use crate::vertex::{INDICES, VERTICES, Vertex};
+use crate::obj;
+use crate::vertex::Vertex;
 
 const TITLE: &str = "Rust GPU Renderer";
 
+// `env!` reads a value when the program compiles. CARGO_MANIFEST_DIR is the folder
+// that holds Cargo.toml, so this path works whichever folder we run from.
+const MODEL_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/teapot.obj");
+
 // 32-bit float depth: one number per pixel, from 0 (near) to 1 (far).
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// What we copy into the uniform buffer each frame. Must match `Uniforms` in shader.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    mvp: Mat4,
+    model: Mat4,
+}
 
 pub struct Renderer {
     // `Arc` (atomic reference counted pointer) lets the window have two owners:
@@ -41,11 +55,15 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    // How many indices to draw (3 per triangle).
+    index_count: u32,
+    // Moves and scales the model so it sits at the origin and fits the view.
+    fit_model: Mat4,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     // We only keep the view. The view keeps its texture alive.
     depth_view: wgpu::TextureView,
-    // When we started. The cube's angle comes from the time since then.
+    // When we started. The model's angle comes from the time since then.
     start_time: Instant,
     // Shown in the window title, for example "NVIDIA GeForce RTX 3090 | Dx12 | driver 581.57".
     gpu_label: String,
@@ -104,25 +122,43 @@ impl Renderer {
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &config);
 
-        // Copy the cube's data into GPU memory. `bytemuck::cast_slice` views our
+        let mesh = obj::load(Path::new(MODEL_PATH)).unwrap_or_else(|e| panic!("{e}"));
+        println!(
+            "Loaded {MODEL_PATH}: {} vertices, {} triangles",
+            mesh.vertices.len(),
+            mesh.indices.len() / 3
+        );
+
+        // Models come in any size and position. Move the centre of the model's box to
+        // the origin, then scale it so its longest side is 3 units.
+        let (min, max) = mesh.bounds();
+        let center = (min + max) * 0.5;
+        let size = max - min;
+        let longest = size.x.max(size.y).max(size.z);
+        let fit_model = Mat4::scale(3.0 / longest) * Mat4::translation(center * -1.0);
+
+        // Copy the model's data into GPU memory. `bytemuck::cast_slice` views our
         // `&[Vertex]` as `&[u8]` (raw bytes) without copying anything on the CPU.
         // `usage` says what the buffer is for. Using it any other way is an error.
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("index buffer"),
-            contents: bytemuck::cast_slice(INDICES),
+            contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // The uniform buffer holds one matrix. COPY_DST means we're allowed to
+        // The uniform buffer holds two matrices. COPY_DST means we're allowed to
         // write new data into it later, which we do every frame.
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("uniform buffer"),
-            contents: bytemuck::bytes_of(&Mat4::IDENTITY),
+            contents: bytemuck::bytes_of(&Uniforms {
+                mvp: Mat4::IDENTITY,
+                model: Mat4::IDENTITY,
+            }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -162,6 +198,8 @@ impl Renderer {
             pipeline,
             vertex_buffer,
             index_buffer,
+            index_count: mesh.indices.len() as u32,
+            fit_model,
             uniform_buffer,
             uniform_bind_group,
             depth_view,
@@ -206,11 +244,11 @@ impl Renderer {
             }
         };
 
-        // Work out this frame's matrix and copy it into the uniform buffer.
+        // Work out this frame's matrices and copy them into the uniform buffer.
         // `write_buffer` is queued, so it happens before the draw we submit below.
-        let mvp = self.camera_matrix();
+        let uniforms = self.uniforms();
         self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&mvp));
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // A "view" describes how to read or write a texture. The default is fine.
         let view = frame
@@ -265,9 +303,10 @@ impl Renderer {
             // Slot 0 matches the first entry in the pipeline's `buffers` list.
             // `slice(..)` means "the whole buffer".
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            // Draw all 36 indices (12 triangles), starting at vertex 0, with 1 instance.
-            pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+            // Uint32 must match the `u32` type of `Mesh::indices`.
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // Draw all the indices, starting at vertex 0, with 1 instance.
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
 
         self.queue.submit([encoder.finish()]);
@@ -285,14 +324,15 @@ impl Renderer {
         self.window.request_redraw();
     }
 
-    /// Builds projection * view * model for this frame.
-    fn camera_matrix(&self) -> Mat4 {
+    /// Builds this frame's matrices: the model matrix, and projection * view * model.
+    fn uniforms(&self) -> Uniforms {
         // The angle comes from real time, not from the frame count,
-        // so the cube spins at the same speed at any frame rate.
+        // so the model spins at the same speed at any frame rate.
         let t = self.start_time.elapsed().as_secs_f32();
-        let model = Mat4::rotation_y(t) * Mat4::rotation_x(t * 0.5);
+        // First fit the model to the view, then turn it.
+        let model = Mat4::rotation_y(t * 0.6) * self.fit_model;
 
-        // The camera sits a little above and in front of the cube, looking at its centre.
+        // The camera sits a little above and in front of the model, looking at its centre.
         let view = Mat4::look_at(
             Vec3::new(0.0, 2.0, 6.0),
             Vec3::new(0.0, 0.0, 0.0),
@@ -302,7 +342,10 @@ impl Renderer {
         let aspect = self.config.width as f32 / self.config.height as f32;
         let proj = Mat4::perspective(45f32.to_radians(), aspect, 0.1, 100.0);
 
-        proj * view * model
+        Uniforms {
+            mvp: proj * view * model,
+            model,
+        }
     }
 
     /// Counts frames, and once a second shows the frame rate in the window title.
@@ -326,7 +369,7 @@ impl Renderer {
 /// Makes a depth texture the same size as the window, and returns a view of it.
 ///
 /// The depth buffer stores how far away the nearest thing drawn so far is, for each pixel.
-/// A new pixel is only drawn if it is closer, so the front of the cube hides the back.
+/// A new pixel is only drawn if it is closer, so the front of the model hides the back.
 fn create_depth_view(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -388,7 +431,7 @@ fn create_pipeline(
         primitive: wgpu::PrimitiveState {
             // Counter-clockwise triangles are the front.
             front_face: wgpu::FrontFace::Ccw,
-            // Skip triangles that face away from the camera (the back of the cube).
+            // Skip triangles that face away from the camera (the back of the model).
             // We can't see them anyway, so this saves the GPU work.
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()

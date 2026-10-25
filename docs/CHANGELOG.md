@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Newest entries go first.
 
 ## 2026-10-25
 
+- The renderer now loads and draws a model from a file: the Utah teapot (`assets/teapot.obj`), spinning around y. The model is moved and scaled to fit the view, using its bounding box. Tested with Vulkan and DX12.
+- Added `src/obj.rs`: a hand-written OBJ reader. It reads `v` and `f` lines (including `1/2/3` and negative indices), splits faces with more than 3 corners into triangles, and works out smooth normals. Has unit tests (`cargo test obj`).
+- Added simple lighting: `Vertex.color` became `Vertex.normal`, and the fragment shader does diffuse (Lambert) lighting plus a little ambient light. The uniform buffer now holds the model matrix as well as `mvp`, so normals can be turned into world space.
+- Indices are now `u32` instead of `u16`, so models can have more than 65,535 vertices. Removed the cube data.
+- `math.rs`: added `Mat4::translation`, `Mat4::scale`, and `Vec3` add, scale, length, min and max.
 - The renderer now draws a spinning 3D cube. Added a uniform buffer and bind group for the matrix, a depth buffer (recreated on resize) and back-face culling. The projection uses the window's aspect ratio, so shapes no longer stretch.
 - Added `src/math.rs`: a small hand-written `Vec3` and `Mat4` (rotation, look-at camera, perspective), with unit tests (`cargo test math`). We chose this over a math library so the matrix math is visible.
 - `Vertex.position` is now 3D (`[f32; 3]`). The vertex data is now a cube: 8 corners and 36 indices.

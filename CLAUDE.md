@@ -14,11 +14,11 @@ The owner is learning Rust and building a GPU renderer in it. Treat this as a le
 
 ## Current state
 
-A Cargo binary project named `rust_gpu_renderer` (edition 2024). It opens a window and draws a spinning, coloured 3D cube with wgpu (vertex and index buffers, a uniform buffer for the matrix, a depth buffer, back-face culling). Tested on Windows 11 (MSVC toolchain, RTX 3090) with both the Vulkan and DX12 backends.
+A Cargo binary project named `rust_gpu_renderer` (edition 2024). It opens a window, loads a model from an OBJ file (`assets/teapot.obj`) with a hand-written reader, and draws it spinning with wgpu, lit by one directional light (vertex and index buffers, a uniform buffer for the matrices, a depth buffer, back-face culling). Tested on Windows 11 (MSVC toolchain, RTX 3090) with both the Vulkan and DX12 backends.
 
 Dependencies: `wgpu` 30, `winit` 0.30, `pollster` (runs async setup code), `bytemuck` (turns vertex data into bytes), `env_logger` and `log`. wgpu 30 changed several APIs compared with older tutorials. For example, frames are shown with `queue.present(frame)`, `get_current_texture()` returns a `CurrentSurfaceTexture` enum, `VertexState::buffers` takes `Option<VertexBufferLayout>` items, `PipelineLayoutDescriptor::bind_group_layouts` takes `Option<&BindGroupLayout>` items, and `DepthStencilState`'s `depth_write_enabled` and `depth_compare` are `Option`s.
 
-No math library: the owner chose a small hand-written `Mat4` in `src/math.rs` to learn how the matrices work. Extend it when new math is needed rather than adding `glam` or `cgmath`. Check the crate source in `~/.cargo/registry/src` when unsure.
+No math library: the owner chose a small hand-written `Mat4` in `src/math.rs` to learn how the matrices work. Extend it when new math is needed rather than adding `glam` or `cgmath`. In the same spirit, the OBJ reader in `src/obj.rs` is hand-written (no `tobj`). Check the crate source in `~/.cargo/registry/src` when unsure.
 
 ## Commands
 
@@ -42,9 +42,11 @@ Decided:
 Code layout:
 
 - `src/main.rs`: creates the window and handles winit events (resize, redraw, close).
-- `src/renderer.rs`: all wgpu code. `Renderer::new` sets up the instance, surface, adapter, device, queue, pipeline and buffers. `render()` draws one frame.
-- `src/vertex.rs`: the `Vertex` struct (`#[repr(C)]`, bytemuck `Pod`), its buffer layout, and the cube's vertices and indices (counter-clockwise from outside, because back faces are culled).
+- `src/renderer.rs`: all wgpu code. `Renderer::new` sets up the instance, surface, adapter, device, queue, pipeline and buffers, and loads the model. `render()` draws one frame. `Uniforms` (`mvp` and `model` matrices) must match the struct in the shader.
+- `src/vertex.rs`: the `Vertex` struct (`position`, `normal`; `#[repr(C)]`, bytemuck `Pod`) and its buffer layout.
+- `src/obj.rs`: `Mesh` (vertices and `u32` indices) and the OBJ reader (`load`, `parse`). Reads only `v` and `f`, fan-splits polygons, and computes smooth normals (file normals are ignored). Triangles must be counter-clockwise from outside, because back faces are culled. Has unit tests.
+- `assets/`: model files. `teapot.obj` is the Utah teapot.
 - `src/math.rs`: `Vec3` and `Mat4`. Right-handed, depth 0 to 1 (wgpu/Vulkan/DX12, not OpenGL's -1 to 1), column-major (`cols[column][row]`, same as WGSL). `a * b` applies `b` first. Has unit tests.
-- `src/shader.wgsl`: vertex and fragment shaders. `@location` numbers must match `Vertex::ATTRIBUTES`. `@group(0) @binding(0)` is the uniform buffer holding the `mvp` matrix.
+- `src/shader.wgsl`: vertex and fragment shaders. `@location` numbers must match `Vertex::ATTRIBUTES`. `@group(0) @binding(0)` is the uniform buffer holding the `mvp` and `model` matrices. Lighting is diffuse plus ambient, with a fixed light direction.
 
-Roadmap: triangle (done) → vertex buffer (done) → spinning 3D cube (done) → load models → raw Vulkan backend → raw DX12 backend.
+Roadmap: triangle (done) → vertex buffer (done) → spinning 3D cube (done) → load models (done: OBJ) → raw Vulkan backend → raw DX12 backend.
