@@ -4,6 +4,7 @@ All notable changes to this project are recorded here. Newest entries go first.
 
 ## 2026-10-25
 
+- Added `README.md`: why this repo exists (learning Rust by comparing it with C++, using graphics rendering from my game-industry background), the plan, progress, and how to build and run. Added a teapot screenshot (`docs/teapot.png`) for it.
 - The renderer now loads and draws a model from a file: the Utah teapot (`assets/teapot.obj`), spinning around y. The model is moved and scaled to fit the view, using its bounding box. Tested with Vulkan and DX12.
 - Added `src/obj.rs`: a hand-written OBJ reader. It reads `v` and `f` lines (including `1/2/3` and negative indices), splits faces with more than 3 corners into triangles, and works out smooth normals. Has unit tests (`cargo test obj`).
 - Added simple lighting: `Vertex.color` became `Vertex.normal`, and the fragment shader does diffuse (Lambert) lighting plus a little ambient light. The uniform buffer now holds the model matrix as well as `mvp`, so normals can be turned into world space.
