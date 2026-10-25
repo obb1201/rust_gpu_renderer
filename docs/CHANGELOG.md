@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Newest entries go first.
 
 ## 2026-10-25
 
+- The renderer now draws a spinning 3D cube. Added a uniform buffer and bind group for the matrix, a depth buffer (recreated on resize) and back-face culling. The projection uses the window's aspect ratio, so shapes no longer stretch.
+- Added `src/math.rs`: a small hand-written `Vec3` and `Mat4` (rotation, look-at camera, perspective), with unit tests (`cargo test math`). We chose this over a math library so the matrix math is visible.
+- `Vertex.position` is now 3D (`[f32; 3]`). The vertex data is now a cube: 8 corners and 36 indices.
 - Vertex data now lives in Rust instead of the shader. Added a `Vertex` type (`src/vertex.rs`), a vertex buffer and an index buffer. The renderer now draws a 4-coloured square from two triangles with `draw_indexed`.
 - Added the `bytemuck` dependency, to turn vertex data into raw bytes for the GPU.
 - The window title now shows the GPU, backend, driver version (when known) and the frame rate (FPS and ms per frame), updated once per second.

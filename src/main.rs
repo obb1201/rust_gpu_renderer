@@ -1,3 +1,4 @@
+mod math;
 mod renderer;
 mod vertex;
 

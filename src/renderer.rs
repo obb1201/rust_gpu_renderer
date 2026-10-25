@@ -7,7 +7,10 @@
 //! - `Device`: our open connection to the adapter. We use it to create GPU resources.
 //! - `Queue`: where we send finished work for the GPU to run.
 //! - `RenderPipeline`: the shaders plus all the fixed settings for drawing.
-//! - `Buffer`: a block of GPU memory. We use one for vertices and one for indices.
+//! - `Buffer`: a block of GPU memory. We use one for vertices, one for indices
+//!   and one for the matrix (the uniform buffer).
+//! - `BindGroup`: tells the shader which buffers (and later, textures) to use.
+//! - `Texture`: an image on the GPU. We use one as the depth buffer.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,9 +20,13 @@ use std::time::Instant;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use crate::math::{Mat4, Vec3};
 use crate::vertex::{INDICES, VERTICES, Vertex};
 
 const TITLE: &str = "Rust GPU Renderer";
+
+// 32-bit float depth: one number per pixel, from 0 (near) to 1 (far).
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub struct Renderer {
     // `Arc` (atomic reference counted pointer) lets the window have two owners:
@@ -34,6 +41,12 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    // We only keep the view. The view keeps its texture alive.
+    depth_view: wgpu::TextureView,
+    // When we started. The cube's angle comes from the time since then.
+    start_time: Instant,
     // Shown in the window title, for example "NVIDIA GeForce RTX 3090 | Dx12 | driver 581.57".
     gpu_label: String,
     // Frame rate counter: we count frames and update the title once per second.
@@ -91,9 +104,7 @@ impl Renderer {
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &config);
 
-        let pipeline = create_pipeline(&device, config.format);
-
-        // Copy the square's data into GPU memory. `bytemuck::cast_slice` views our
+        // Copy the cube's data into GPU memory. `bytemuck::cast_slice` views our
         // `&[Vertex]` as `&[u8]` (raw bytes) without copying anything on the CPU.
         // `usage` says what the buffer is for. Using it any other way is an error.
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -107,6 +118,41 @@ impl Renderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // The uniform buffer holds one matrix. COPY_DST means we're allowed to
+        // write new data into it later, which we do every frame.
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("uniform buffer"),
+            contents: bytemuck::bytes_of(&Mat4::IDENTITY),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // A bind group layout describes the shape: "binding 0 is a uniform buffer,
+        // used by the vertex shader". The bind group fills that shape with our buffer.
+        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uniform layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform bind group"),
+            layout: &uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline = create_pipeline(&device, config.format, &uniform_layout);
+        let depth_view = create_depth_view(&device, &config);
+
         Renderer {
             window,
             surface,
@@ -116,6 +162,10 @@ impl Renderer {
             pipeline,
             vertex_buffer,
             index_buffer,
+            uniform_buffer,
+            uniform_bind_group,
+            depth_view,
+            start_time: Instant::now(),
             gpu_label,
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -130,6 +180,8 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        // The depth buffer must be the same size as the window, so make a new one.
+        self.depth_view = create_depth_view(&self.device, &self.config);
     }
 
     pub fn render(&mut self) {
@@ -153,6 +205,12 @@ impl Renderer {
                 return;
             }
         };
+
+        // Work out this frame's matrix and copy it into the uniform buffer.
+        // `write_buffer` is queued, so it happens before the draw we submit below.
+        let mvp = self.camera_matrix();
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&mvp));
 
         // A "view" describes how to read or write a texture. The default is fine.
         let view = frame
@@ -187,17 +245,28 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // Start every pixel at 1.0, the furthest possible depth.
+                        load: wgpu::LoadOp::Clear(1.0),
+                        // We don't need the depth values after this frame.
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
+            // Group 0 matches `@group(0)` in the shader.
+            pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             // Slot 0 matches the first entry in the pipeline's `buffers` list.
             // `slice(..)` means "the whole buffer".
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            // Draw all 6 indices (2 triangles), starting at vertex 0, with 1 instance.
+            // Draw all 36 indices (12 triangles), starting at vertex 0, with 1 instance.
             pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
@@ -214,6 +283,26 @@ impl Renderer {
 
         // Ask for the next frame straight away, so we keep drawing.
         self.window.request_redraw();
+    }
+
+    /// Builds projection * view * model for this frame.
+    fn camera_matrix(&self) -> Mat4 {
+        // The angle comes from real time, not from the frame count,
+        // so the cube spins at the same speed at any frame rate.
+        let t = self.start_time.elapsed().as_secs_f32();
+        let model = Mat4::rotation_y(t) * Mat4::rotation_x(t * 0.5);
+
+        // The camera sits a little above and in front of the cube, looking at its centre.
+        let view = Mat4::look_at(
+            Vec3::new(0.0, 2.0, 6.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+
+        let aspect = self.config.width as f32 / self.config.height as f32;
+        let proj = Mat4::perspective(45f32.to_radians(), aspect, 0.1, 100.0);
+
+        proj * view * model
     }
 
     /// Counts frames, and once a second shows the frame rate in the window title.
@@ -234,15 +323,44 @@ impl Renderer {
     }
 }
 
-fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+/// Makes a depth texture the same size as the window, and returns a view of it.
+///
+/// The depth buffer stores how far away the nearest thing drawn so far is, for each pixel.
+/// A new pixel is only drawn if it is closer, so the front of the cube hides the back.
+fn create_depth_view(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth texture"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    uniform_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
     // `include_wgsl!` copies shader.wgsl into the program when it compiles.
     let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
-    // The layout lists the resources (buffers, textures) the shaders use.
-    // Vertex buffers are set separately, so this is still empty for now.
+    // The layout lists the bind groups the shaders use. Entry 0 is `@group(0)`.
+    // Each entry is an `Option` because wgpu 30 allows empty groups.
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("main layout"),
-        bind_group_layouts: &[],
+        bind_group_layouts: &[Some(uniform_layout)],
         immediate_size: 0,
     });
 
@@ -267,9 +385,22 @@ fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        // Default: draw triangles from every 3 vertices, counter-clockwise is the front.
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        primitive: wgpu::PrimitiveState {
+            // Counter-clockwise triangles are the front.
+            front_face: wgpu::FrontFace::Ccw,
+            // Skip triangles that face away from the camera (the back of the cube).
+            // We can't see them anyway, so this saves the GPU work.
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            // Draw a pixel only if it is closer than what is already there.
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,

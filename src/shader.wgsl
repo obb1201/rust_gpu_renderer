@@ -3,10 +3,20 @@
 // - the vertex shader runs once per corner (vertex) and says where it goes on screen.
 // - the fragment shader runs once per pixel inside a triangle and says its colour.
 
+// Data that is the same for every vertex in a draw call.
+// `mvp` is projection * view * model, built on the CPU in renderer.rs.
+struct Uniforms {
+    mvp: mat4x4<f32>,
+};
+
+// `@group(0) @binding(0)` matches the bind group set in renderer.rs.
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
 // One vertex, read from the vertex buffer.
 // The `@location` numbers match `Vertex::ATTRIBUTES` in vertex.rs.
 struct VertexInput {
-    @location(0) position: vec2<f32>,
+    @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
 };
 
@@ -20,8 +30,8 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    // z = 0 (no depth yet), w = 1 (a normal point).
-    out.position = vec4<f32>(in.position, 0.0, 1.0);
+    // w = 1 means "a point". The matrix moves it from the cube's own space to the screen.
+    out.position = uniforms.mvp * vec4<f32>(in.position, 1.0);
     out.color = in.color;
     return out;
 }
