@@ -14,9 +14,9 @@ The owner is learning Rust and building a GPU renderer in it. Treat this as a le
 
 ## Current state
 
-A Cargo binary project named `rust_gpu_renderer` (edition 2024). It opens a window and draws a coloured triangle with wgpu. Tested on Windows 11 (MSVC toolchain, RTX 3090) with both the Vulkan and DX12 backends. No git commits yet.
+A Cargo binary project named `rust_gpu_renderer` (edition 2024). It opens a window and draws a coloured square (two triangles, from a vertex buffer and an index buffer) with wgpu. Tested on Windows 11 (MSVC toolchain, RTX 3090) with both the Vulkan and DX12 backends.
 
-Dependencies: `wgpu` 30, `winit` 0.30, `pollster` (runs async setup code), `env_logger` and `log`. wgpu 30 changed several APIs compared with older tutorials. For example, frames are shown with `queue.present(frame)` and `get_current_texture()` returns a `CurrentSurfaceTexture` enum. Check the crate source in `~/.cargo/registry/src` when unsure.
+Dependencies: `wgpu` 30, `winit` 0.30, `pollster` (runs async setup code), `bytemuck` (turns vertex data into bytes), `env_logger` and `log`. wgpu 30 changed several APIs compared with older tutorials. For example, frames are shown with `queue.present(frame)`, `get_current_texture()` returns a `CurrentSurfaceTexture` enum, and `VertexState::buffers` takes `Option<VertexBufferLayout>` items. Check the crate source in `~/.cargo/registry/src` when unsure.
 
 ## Commands
 
@@ -40,7 +40,8 @@ Decided:
 Code layout:
 
 - `src/main.rs`: creates the window and handles winit events (resize, redraw, close).
-- `src/renderer.rs`: all wgpu code. `Renderer::new` sets up the instance, surface, adapter, device, queue and pipeline. `render()` draws one frame.
-- `src/shader.wgsl`: vertex and fragment shaders. The triangle's corners and colours are hard-coded in the vertex shader, so there's no vertex buffer yet.
+- `src/renderer.rs`: all wgpu code. `Renderer::new` sets up the instance, surface, adapter, device, queue, pipeline and buffers. `render()` draws one frame.
+- `src/vertex.rs`: the `Vertex` struct (`#[repr(C)]`, bytemuck `Pod`), its buffer layout, and the square's vertices and indices.
+- `src/shader.wgsl`: vertex and fragment shaders. `@location` numbers must match `Vertex::ATTRIBUTES`.
 
-Roadmap: triangle (done) → vertex buffer → spinning 3D cube (uniforms, depth buffer) → load models → raw Vulkan backend → raw DX12 backend.
+Roadmap: triangle (done) → vertex buffer (done) → spinning 3D cube (uniforms, depth buffer) → load models → raw Vulkan backend → raw DX12 backend.

@@ -1,4 +1,5 @@
 mod renderer;
+mod vertex;
 
 use std::sync::Arc;
 

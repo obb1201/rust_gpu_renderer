@@ -7,11 +7,17 @@
 //! - `Device`: our open connection to the adapter. We use it to create GPU resources.
 //! - `Queue`: where we send finished work for the GPU to run.
 //! - `RenderPipeline`: the shaders plus all the fixed settings for drawing.
+//! - `Buffer`: a block of GPU memory. We use one for vertices and one for indices.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+// `DeviceExt` is a trait that adds `create_buffer_init` to `Device`.
+// In Rust, a trait's methods can only be called when the trait is imported.
+use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+use crate::vertex::{INDICES, VERTICES, Vertex};
 
 const TITLE: &str = "Rust GPU Renderer";
 
@@ -26,6 +32,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
     // Shown in the window title, for example "NVIDIA GeForce RTX 3090 | Dx12 | driver 581.57".
     gpu_label: String,
     // Frame rate counter: we count frames and update the title once per second.
@@ -85,6 +93,20 @@ impl Renderer {
 
         let pipeline = create_pipeline(&device, config.format);
 
+        // Copy the square's data into GPU memory. `bytemuck::cast_slice` views our
+        // `&[Vertex]` as `&[u8]` (raw bytes) without copying anything on the CPU.
+        // `usage` says what the buffer is for. Using it any other way is an error.
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("vertex buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("index buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
         Renderer {
             window,
             surface,
@@ -92,6 +114,8 @@ impl Renderer {
             queue,
             config,
             pipeline,
+            vertex_buffer,
+            index_buffer,
             gpu_label,
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -147,7 +171,7 @@ impl Renderer {
         // again until that borrow is over.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("triangle pass"),
+                label: Some("main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -169,8 +193,12 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            // Draw 3 vertices (indices 0, 1, 2) and 1 instance.
-            pass.draw(0..3, 0..1);
+            // Slot 0 matches the first entry in the pipeline's `buffers` list.
+            // `slice(..)` means "the whole buffer".
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            // Draw all 6 indices (2 triangles), starting at vertex 0, with 1 instance.
+            pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
         self.queue.submit([encoder.finish()]);
@@ -211,21 +239,23 @@ fn create_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::
     let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
     // The layout lists the resources (buffers, textures) the shaders use.
-    // Our triangle uses none yet, so it is empty.
+    // Vertex buffers are set separately, so this is still empty for now.
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("triangle layout"),
+        label: Some("main layout"),
         bind_group_layouts: &[],
         immediate_size: 0,
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("triangle pipeline"),
+        label: Some("main pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[],
+            // One vertex buffer (slot 0), laid out as described by `Vertex::layout()`.
+            // Each slot is an `Option` because wgpu 30 allows empty slots.
+            buffers: &[Some(Vertex::layout())],
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,

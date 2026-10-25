@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. Newest entries go first.
 
 ## 2026-10-25
 
+- Vertex data now lives in Rust instead of the shader. Added a `Vertex` type (`src/vertex.rs`), a vertex buffer and an index buffer. The renderer now draws a 4-coloured square from two triangles with `draw_indexed`.
+- Added the `bytemuck` dependency, to turn vertex data into raw bytes for the GPU.
 - The window title now shows the GPU, backend, driver version (when known) and the frame rate (FPS and ms per frame), updated once per second.
 
 - Recorded the GPU API decision in `CLAUDE.md`: cross-platform, start with wgpu, and learn Vulkan and DX12 too.
